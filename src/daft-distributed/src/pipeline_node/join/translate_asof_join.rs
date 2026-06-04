@@ -68,10 +68,6 @@ impl LogicalPlanToPipelineNodeTranslator {
             ));
         }
 
-        let num_left_partitions = left.config().clustering_spec.num_partitions();
-        let num_right_partitions = right.config().clustering_spec.num_partitions();
-        let num_partitions = max(num_left_partitions, num_right_partitions);
-
         let node_id = self.get_next_pipeline_node_id();
         Ok(DistributedPipelineNode::new(
             Arc::new(AsofJoinAlignedNode::new(
@@ -82,7 +78,6 @@ impl LogicalPlanToPipelineNodeTranslator {
                 left_on,
                 right_on,
                 strategy,
-                num_partitions,
                 left,
                 right,
                 output_schema,

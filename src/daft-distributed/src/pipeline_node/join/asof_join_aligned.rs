@@ -40,7 +40,6 @@ pub(crate) struct AsofJoinAlignedNode {
     left_on: BoundExpr,
     right_on: BoundExpr,
     strategy: AsofJoinStrategy,
-    num_partitions: usize,
 
     left: DistributedPipelineNode,
     right: DistributedPipelineNode,
@@ -58,7 +57,6 @@ impl AsofJoinAlignedNode {
         left_on: BoundExpr,
         right_on: BoundExpr,
         strategy: AsofJoinStrategy,
-        num_partitions: usize,
         left: DistributedPipelineNode,
         right: DistributedPipelineNode,
         output_schema: SchemaRef,
@@ -71,13 +69,11 @@ impl AsofJoinAlignedNode {
             NodeType::AsofJoin,
             NodeCategory::BlockingSink,
         );
+        let num_partitions = left.config().clustering_spec.num_partitions();
         let config = PipelineNodeConfig::new(
             output_schema,
             plan_config.config.clone(),
-            ClusteringStrategy::Explicit(BoundClusteringSpec::hash(
-                num_partitions,
-                left_by.clone(),
-            )),
+            ClusteringStrategy::Explicit(BoundClusteringSpec::unknown(num_partitions)),
         );
         Self {
             config,
@@ -87,7 +83,6 @@ impl AsofJoinAlignedNode {
             left_on,
             right_on,
             strategy,
-            num_partitions,
             left,
             right,
         }
@@ -449,7 +444,6 @@ impl PipelineNodeImpl for AsofJoinAlignedNode {
         ));
         res.push(format!("Left on: {}", self.left_on));
         res.push(format!("Right on: {}", self.right_on));
-        res.push(format!("Num partitions: {}", self.num_partitions));
         res
     }
 
