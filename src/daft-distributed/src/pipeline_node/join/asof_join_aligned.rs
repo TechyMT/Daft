@@ -332,50 +332,40 @@ impl AsofJoinAlignedNode {
         .await
     }
 
-    fn right_composite_key(&self) -> Vec<BoundExpr> {
-        self.right_by
-            .iter()
-            .chain(std::iter::once(&self.right_on))
-            .cloned()
-            .collect()
-    }
-
-    fn submit_top1_carryover_task(
+    fn submit_boundary_carryover_task(
         &self,
-        inputs: Vec<MaterializedOutput>,
-        descending: bool,
+        boundary_pset: MaterializedOutput,
+        offset: Option<u64>,
+        partition_idx: usize,
         phase: &str,
         strategy: Option<SchedulingStrategy>,
         task_id_counter: &TaskIDCounter,
         scheduler_handle: &SchedulerHandle<SwordfishTask>,
     ) -> DaftResult<SubmittedTask> {
-        let composite_keys = self.right_composite_key();
-        let n_keys = composite_keys.len();
         let node_id = self.node_id();
 
         let (in_memory_scan, psets) = MaterializedOutput::into_in_memory_scan_with_psets_and_phase(
-            inputs,
+            vec![boundary_pset],
             self.right.config().schema.clone(),
             node_id,
             phase,
         );
 
-        let plan = LocalPhysicalPlan::top_n(
+        let plan = LocalPhysicalPlan::limit(
             in_memory_scan,
-            composite_keys,
-            vec![descending; n_keys],
-            vec![false; n_keys],
             1,
-            None,
+            offset,
             StatsState::NotMaterialized,
             LocalNodeContext::new(Some(node_id as usize)).with_phase(phase),
         );
 
         SwordfishTaskBuilder::new(plan, self, node_id)
-            // Forward (min) and backward (max) carryover tasks have identical top_n plans but
-            // compute different results, so give them distinct fingerprints to avoid
-            // sharing a worker pipeline and producing incorrect outputs.
-            .extend_fingerprint(u32::from(descending))
+            // Each carryover task has a structurally identical Limit(1) plan. Fold in
+            // direction (forward vs backward) and partition index so every task gets
+            // its own pipeline instance and streaming early-termination doesn't kill
+            // a pipeline that another task is still trying to use.
+            .extend_fingerprint(u32::from(offset.is_some()))
+            .extend_fingerprint(partition_idx as u32)
             .with_psets(node_id, psets)
             .with_strategy(strategy)
             .build(self.context().query_idx, task_id_counter)
@@ -391,7 +381,8 @@ impl AsofJoinAlignedNode {
     ) -> DaftResult<Vec<Option<SubmittedTask>>> {
         right_partitions
             .into_iter()
-            .map(|partition| {
+            .enumerate()
+            .map(|(partition_idx, partition)| {
                 if partition.num_rows() == 0 {
                     return Ok(None);
                 }
@@ -401,9 +392,17 @@ impl AsofJoinAlignedNode {
                 } else {
                     FINAL_CARRYOVER_FORWARD_PHASE
                 };
-                self.submit_top1_carryover_task(
-                    vec![partition],
-                    descending,
+
+                let offset = if descending {
+                    Some(partition.num_rows() as u64 - 1)
+                } else {
+                    None
+                };
+
+                self.submit_boundary_carryover_task(
+                    partition,
+                    offset,
+                    partition_idx,
                     phase,
                     None,
                     task_id_counter,
